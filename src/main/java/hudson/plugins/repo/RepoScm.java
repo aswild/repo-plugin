@@ -973,7 +973,7 @@ public class RepoScm extends SCM implements Serializable {
 			commands.add("-g");
 			commands.add(env.expand(manifestGroup));
 		}
-		if (manifestPlatform != null) {
+		if (manifestPlatform != null && !manifestPlatform.isEmpty()) {
 			commands.add("-p");
 			commands.add(env.expand(manifestPlatform));
 		}
