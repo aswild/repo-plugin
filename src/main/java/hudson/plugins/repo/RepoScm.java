@@ -881,32 +881,6 @@ public class RepoScm extends SCM implements Serializable {
 		final List<String> commands = new ArrayList<String>(4);
 		debug.log(Level.FINE, "Syncing out code in: " + workspace.getName());
 		commands.clear();
-		if (resetFirst) {
-			commands.add(getDescriptor().getExecutable());
-			commands.add("forall");
-			commands.add("-c");
-			commands.add("git reset --hard");
-			int resetCode = launcher.launch().stdout(logger)
-				.stderr(logger).pwd(workspace).cmds(commands).envs(env).join();
-
-			if (resetCode != 0) {
-				debug.log(Level.WARNING, "Failed to reset first.");
-			}
-			commands.clear();
-		}
-		if (cleanFirst) {
-			commands.add(getDescriptor().getExecutable());
-			commands.add("forall");
-			commands.add("-c");
-			commands.add("git clean -fdx");
-			int cleanCode = launcher.launch().stdout(logger)
-				.stderr(logger).pwd(workspace).cmds(commands).envs(env).join();
-
-			if (cleanCode != 0) {
-				debug.log(Level.WARNING, "Failed to clean first.");
-			}
-			commands.clear();
-		}
 		commands.add(getDescriptor().getExecutable());
 		if (trace) {
 		    commands.add("--trace");
@@ -946,6 +920,41 @@ public class RepoScm extends SCM implements Serializable {
 		final List<String> commands = new ArrayList<String>(4);
 
 		debug.log(Level.INFO, "Checking out code in: {0}", workspace.getName());
+
+		// reset/clean actions must happen before repo init, in case the manifest changed
+		// and the new manifest removes projects that are dirty in the workspace.
+		// If manifest.xml doesn't exist yet then this is a fresh workspace, and repo sync
+		// from that will result in a clean workspace, so there's no need to reset/clean again.
+		// to clean again after repo init.
+		if (workspace.child(".repo/manifest.xml").exists()) {
+			int rc = 0;
+			if (resetFirst) {
+				debug.log(Level.INFO, "Resetting workspace before re-init");
+				commands.add(getDescriptor().getExecutable());
+				commands.add("forall");
+				commands.add("-c");
+				commands.add("git reset --hard");
+				rc = launcher.launch().stdout(logger).pwd(workspace).cmds(commands)
+					.envs(env).join();
+				if (rc != 0) {
+					debug.log(Level.WARNING, "Failed to reset before init, continuing");
+				}
+				commands.clear();
+			}
+			if (cleanFirst) {
+				debug.log(Level.INFO, "Old manifest exists in workspace, cleaning before re-init");
+				commands.add(getDescriptor().getExecutable());
+				commands.add("forall");
+				commands.add("-c");
+				commands.add("git clean -fdx");
+				rc = launcher.launch().stdout(logger).pwd(workspace).cmds(commands)
+					.envs(env).join();
+				if (rc != 0) {
+					debug.log(Level.WARNING, "Cleaning workspace before re-init");
+				}
+				commands.clear();
+			}
+		}
 
 		commands.add(getDescriptor().getExecutable());
 		if (trace) {
