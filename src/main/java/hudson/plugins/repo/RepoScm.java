@@ -111,6 +111,7 @@ public class RepoScm extends SCM implements Serializable {
 	@CheckForNull private Set<String> ignoreProjects;
 	@CheckForNull private EnvVars extraEnvVars;
 	@CheckForNull private boolean noCloneBundle;
+	@CheckForNull private boolean worktree;
 
 	/**
 	 * Returns the manifest repository URL.
@@ -335,6 +336,13 @@ public class RepoScm extends SCM implements Serializable {
 	public boolean isNoCloneBundle() {
 		return noCloneBundle;
 	}
+	/**
+	 * Returns the value of isWorktree.
+	 */
+	@Exported
+	public boolean isWorktree() {
+		return worktree;
+	}
 
 	/**
 	 * Returns the value of manifestSubmodules.
@@ -428,6 +436,7 @@ public class RepoScm extends SCM implements Serializable {
 		setShowAllChanges(showAllChanges);
 		setRepoUrl(repoUrl);
 		ignoreProjects = Collections.<String>emptySet();
+		setWorktree(false);
 	}
 
 	/**
@@ -461,6 +470,7 @@ public class RepoScm extends SCM implements Serializable {
 		fetchSubmodules = false;
 		ignoreProjects = Collections.<String>emptySet();
 		noCloneBundle = false;
+		worktree = false;
 	}
 
 	/**
@@ -662,6 +672,18 @@ public class RepoScm extends SCM implements Serializable {
 	}
 
 	/**
+	 * Set worktree.
+	 *
+	 * @param worktree
+	 *        If this value is true, add the "--worktree" option when
+	 *        running the "repo init" command.
+     */
+	@DataBoundSetter
+	public void setWorktree(final boolean worktree) {
+		this.worktree = worktree;
+	}
+
+	/**
 	 * Set the repo url.
 	 *
 	 * @param repoUrl
@@ -800,12 +822,15 @@ public class RepoScm extends SCM implements Serializable {
 			InterruptedException {
 		SCMRevisionState myBaseline = baseline;
 		final EnvVars env = getEnvVars(null, job);
+		final String expandedManifestUrl = env.expand(manifestRepositoryUrl);
 		final String expandedManifestBranch = env.expand(manifestBranch);
+		final String expandedManifestFile = env.expand(manifestFile);
 		final Run<?, ?> lastRun = job.getLastBuild();
 
 		if (myBaseline == SCMRevisionState.NONE) {
 			// Probably the first build, or possibly an aborted build.
-			myBaseline = getLastState(lastRun, expandedManifestBranch);
+			myBaseline = getLastState(lastRun, expandedManifestUrl,
+					expandedManifestBranch, expandedManifestFile);
 			if (myBaseline == SCMRevisionState.NONE) {
 				return PollingResult.BUILD_NOW;
 			}
@@ -831,7 +856,8 @@ public class RepoScm extends SCM implements Serializable {
 		final RevisionState currentState = new RevisionState(
 				getStaticManifest(launcher, repoDir, listener.getLogger(), env),
 				getManifestRevision(launcher, repoDir, listener.getLogger(), env),
-				expandedManifestBranch, listener.getLogger());
+				expandedManifestUrl, expandedManifestBranch, expandedManifestFile,
+				listener.getLogger());
 
 		final Change change;
 		if (currentState.equals(myBaseline)) {
@@ -876,15 +902,17 @@ public class RepoScm extends SCM implements Serializable {
 				getStaticManifest(launcher, repoDir, listener.getLogger(), env);
 		final String manifestRevision =
 				getManifestRevision(launcher, repoDir, listener.getLogger(), env);
+        final String expandedUrl = env.expand(manifestRepositoryUrl);
 		final String expandedBranch = env.expand(manifestBranch);
+        final String expandedFile = env.expand(manifestFile);
 		final RevisionState currentState =
-				new RevisionState(manifest, manifestRevision, expandedBranch,
-						listener.getLogger());
+				new RevisionState(manifest, manifestRevision, expandedUrl,
+                        expandedBranch, expandedFile, listener.getLogger());
 		build.addAction(currentState);
 
 		final Run previousBuild = build.getPreviousBuild();
 		final SCMRevisionState previousState =
-				getLastState(previousBuild, expandedBranch);
+				getLastState(previousBuild, expandedUrl, expandedBranch, expandedFile);
 
 		if (changelogFile != null) {
 			ChangeLog.saveChangeLog(
@@ -895,7 +923,12 @@ public class RepoScm extends SCM implements Serializable {
 					repoDir,
 					showAllChanges);
 		}
-		build.addAction(new ManifestAction(build));
+
+		// TODO: create a single action displaying all manifests?
+		ManifestAction manifestAction = new ManifestAction(build);
+		int revisionStateCount = build.getActions(RevisionState.class).size();
+		manifestAction.setIndex(revisionStateCount);
+		build.addAction(manifestAction);
 	}
 
 	private int doSync(final Launcher launcher, @Nonnull final FilePath workspace,
@@ -1018,6 +1051,9 @@ public class RepoScm extends SCM implements Serializable {
 		if (isNoCloneBundle()) {
 			commands.add("--no-clone-bundle");
 		}
+		if (isWorktree()) {
+			commands.add("--worktree");
+		}
 		if (currentBranch) {
 			commands.add("--current-branch");
 		}
@@ -1110,21 +1146,31 @@ public class RepoScm extends SCM implements Serializable {
 		return manifestText;
 	}
 
+    private boolean isRelevantState(final RevisionState state, final String url,
+                                    final String branch, final String file) {
+	    return StringUtils.equals(state.getBranch(), branch)
+				&& StringUtils.equals(state.getUrl(), url)
+				&& StringUtils.equals(state.getFile(), file);
+    }
+
 	@Nonnull
 	private SCMRevisionState getLastState(final Run<?, ?> lastBuild,
-			final String expandedManifestBranch) {
+			final String expandedManifestUrl, final String expandedManifestBranch,
+			final String expandedManifestFile) {
 		if (lastBuild == null) {
 			return RevisionState.NONE;
 		}
-		final RevisionState lastState =
-				lastBuild.getAction(RevisionState.class);
-		if (lastState != null
-				&& StringUtils.equals(lastState.getBranch(),
-						expandedManifestBranch)) {
-			return lastState;
+		final List<RevisionState> lastStateList =
+				lastBuild.getActions(RevisionState.class);
+		for (RevisionState lastState : lastStateList) {
+			if (lastState != null
+					&& isRelevantState(lastState, expandedManifestUrl,
+							expandedManifestBranch, expandedManifestFile)) {
+				return lastState;
+			}
 		}
 		return getLastState(lastBuild.getPreviousBuild(),
-				expandedManifestBranch);
+				expandedManifestUrl, expandedManifestBranch, expandedManifestFile);
 	}
 
 	@Override
